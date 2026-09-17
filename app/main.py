@@ -8,8 +8,18 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from .models import Canvas, Grid, InspectRequest, InspectResponse, SpotResult
-from .transform import locate_cell, normalize_point, normalized_canvas
+from .models import (
+    Canvas,
+    Grid,
+    InspectRequest,
+    InspectResponse,
+    NormalizedVertex,
+    PathPoint,
+    SpotResult,
+    TraceRequest,
+    TraceResponse,
+)
+from .transform import locate_cell, normalize_point, normalized_canvas, trace_cells
 
 app = FastAPI(
     title="EL Cell Locator",
@@ -17,17 +27,20 @@ app = FastAPI(
     version="1.0.0",
 )
 
+_ARRAY_FIELDS = ("points", "vertices")
+
 
 def _point_index(error: Dict[str, Any]) -> Optional[int]:
-    """Best-effort extraction of the offending ``points`` array index."""
+    """Best-effort extraction of the offending array index (``points``/``vertices``)."""
     ctx = error.get("ctx") or {}
     if isinstance(ctx.get("index"), int):
         return ctx["index"]
     loc = list(error.get("loc") or [])
-    if "points" in loc:
-        pos = loc.index("points")
-        if pos + 1 < len(loc) and isinstance(loc[pos + 1], int):
-            return loc[pos + 1]
+    for field in _ARRAY_FIELDS:
+        if field in loc:
+            pos = loc.index(field)
+            if pos + 1 < len(loc) and isinstance(loc[pos + 1], int):
+                return loc[pos + 1]
     return None
 
 
@@ -75,4 +88,29 @@ def inspect(payload: InspectRequest) -> InspectResponse:
         canvas=Canvas(width=canvas_width, height=canvas_height),
         grid=Grid(rows=payload.rows, cols=payload.cols),
         results=results,
+    )
+
+
+@app.post("/trace", response_model=TraceResponse)
+def trace(payload: TraceRequest) -> TraceResponse:
+    """Normalize the crack polyline and return the ordered cells it enters.
+
+    Each vertex is normalized with the same rotation formula as ``/inspect``;
+    the cell path is computed with exact integer arithmetic (cross-multiplied
+    crossing parameters, no float rounding).
+    """
+    canvas_width, canvas_height = normalized_canvas(payload.width, payload.height, payload.rotation)
+    normalized: List[NormalizedVertex] = []
+    points: List[tuple[int, int]] = []
+    for vertex in payload.vertices:
+        u, v = normalize_point(vertex.x, vertex.y, payload.width, payload.height, payload.rotation)
+        points.append((u, v))
+        normalized.append(NormalizedVertex(x=u, y=v))
+    path = trace_cells(points, canvas_width, canvas_height, payload.rows, payload.cols)
+    return TraceResponse(
+        rotation=payload.rotation,
+        canvas=Canvas(width=canvas_width, height=canvas_height),
+        grid=Grid(rows=payload.rows, cols=payload.cols),
+        vertices=normalized,
+        path=[PathPoint(row=row, col=col) for row, col in path],
     )

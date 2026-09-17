@@ -74,6 +74,55 @@
 }
 ```
 
+### `POST /trace`
+
+返修工程师按顺序标注裂纹依次经过的暗斑中心，服务把这些顶点连成折线，
+返回裂纹**依次进入**的电池片行列路径。请求字段与 `/inspect` 相同（画布、
+网格、方向），只是点数组名为非空的 `vertices`。
+
+- 每个顶点先按与 `/inspect` 完全相同的旋转公式归一化；
+- 逐段计算与网格分界线的相交参数：参数始终保持整数分数
+  `(k*画布边长 - 起点*格数) / (增量*格数)`，用整数交叉乘法比较先后，
+  **全程不使用浮点**，非整除网格（分界线落在像素内部）也能精确判定；
+- 单元区域按**左上闭、右下开**解释，画布最右、最下边缘闭合；折线沿分界
+  线行走时归入**右侧 / 下侧**单元；同一参数同时穿过横纵分界线时直接进入
+  **对角单元**，只在角点处接触的两个旁侧单元不记录；
+- 连续段交界处相同的行列只保留一次；离开后再次访问的单元予以保留；
+  重复顶点按零长度线段处理，不产生额外记录。
+
+请求体：
+
+```json
+{
+  "width": 600,
+  "height": 400,
+  "rows": 4,
+  "cols": 10,
+  "rotation": 0,
+  "vertices": [{"x": 0, "y": 0}, {"x": 60, "y": 100}, {"x": 120, "y": 100}]
+}
+```
+
+响应 `200`（`vertices` 为归一化后的顶点，`path` 为有序行列，已去重相邻项）：
+
+```json
+{
+  "rotation": 0,
+  "canvas": {"width": 600, "height": 400},
+  "grid": {"rows": 4, "cols": 10},
+  "vertices": [{"x": 0, "y": 0}, {"x": 60, "y": 100}, {"x": 120, "y": 100}],
+  "path": [
+    {"row": 1, "col": 1},
+    {"row": 2, "col": 2},
+    {"row": 2, "col": 3}
+  ]
+}
+```
+
+单个顶点的折线直接返回该顶点所在单元；任一顶点越界或类型非法时整批
+`422`，多点同时非法时按输入位置在 `detail` 中返回**全部**错误（带各自的
+`index`）。
+
 另有 `GET /health` 返回 `{"status": "ok"}`，供健康检查使用。
 
 ## 坐标示例（width=600, height=400, rows=4, cols=10）
@@ -123,7 +172,7 @@ curl -s -X POST http://localhost:8000/inspect \
 ```bash
 pip install -r requirements-dev.txt
 uvicorn app.main:app --reload          # 服务监听 http://localhost:8000
-pytest                                 # 四种方向 + 分界线 + 整批拒绝的建表测试
+pytest                                 # /inspect 建表测试 + /trace 四方向等价/沿线/角点/折返/非法顶点（逐单元相交参考实现核对）
 python verify.py                       # 对本地已启动的服务做一次性验收
 ```
 
@@ -136,18 +185,20 @@ docker compose up --abort-on-container-exit verify # 一次性验收：verify �
 echo $?                                            # 0 = 验收通过
 ```
 
-`verify` 服务等待 `api` 健康后，对四种旋转方向、分界线归属、顺序保持与
-整批拒绝做真实 HTTP 校验，全部通过则以退出码 0 结束，否则为 1。
+`verify` 服务等待 `api` 健康后，对四种旋转方向、分界线归属、顺序保持、
+整批拒绝以及 `/trace` 的四方向等价路径、沿线行走、角点穿越、折返重访、
+非整除网格与非法顶点做真实 HTTP 校验，全部通过则以退出码 0 结束，否则为 1。
 
 ## 目录结构
 
 ```
 app/
-  main.py        # FastAPI 入口、422 异常处理（携带数组下标）
-  models.py      # 严格校验的请求/响应模型（整批边界校验）
-  transform.py   # 纯整数几何：归一化 + 电池片定位
+  main.py        # FastAPI 入口、422 异常处理（携带数组下标）、/inspect 与 /trace
+  models.py      # 严格校验的请求/响应模型（整批边界校验，逐位置收集全部非法顶点）
+  transform.py   # 纯整数几何：归一化 + 电池片定位 + 裂纹逐单元路径（交叉乘法）
 tests/
-  test_inspect.py# pytest 建表测试
+  test_inspect.py# /inspect pytest 建表测试
+  test_trace.py  # /trace 测试（内置独立的逐单元精确分数相交参考实现）
 verify.py        # 一次性验收脚本（compose 中的 verify 服务）
 Dockerfile
 docker-compose.yml
