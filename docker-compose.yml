@@ -1,0 +1,30 @@
+services:
+  api:
+    build: .
+    image: el-cell-locator
+    ports:
+      # Host port is overridable: API_PORT=9000 docker compose up api
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=2).status == 200 else 1)"
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  # One-shot acceptance service: runs the checks in verify.py against the live
+  # API and exits (0 = accepted, 1 = rejected).
+  verify:
+    image: el-cell-locator
+    build: .
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_BASE_URL: http://api:8000
+    command: ["python", "verify.py"]
+    restart: "no"
