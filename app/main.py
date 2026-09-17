@@ -8,8 +8,18 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from .models import Canvas, Grid, InspectRequest, InspectResponse, SpotResult
-from .transform import locate_cell, normalize_point, normalized_canvas
+from .models import (
+    Canvas,
+    CellRef,
+    Grid,
+    InspectRequest,
+    InspectResponse,
+    SpotResult,
+    TraceRequest,
+    TraceResponse,
+    Vertex,
+)
+from .transform import locate_cell, normalize_point, normalized_canvas, trace_polyline
 
 app = FastAPI(
     title="EL Cell Locator",
@@ -75,4 +85,32 @@ def inspect(payload: InspectRequest) -> InspectResponse:
         canvas=Canvas(width=canvas_width, height=canvas_height),
         grid=Grid(rows=payload.rows, cols=payload.cols),
         results=results,
+    )
+
+
+@app.post("/trace", response_model=TraceResponse)
+def trace(payload: TraceRequest) -> TraceResponse:
+    """Normalize the crack polyline and return the ordered cells it enters.
+
+    Each vertex is normalized with the same rotation formula as ``/inspect``;
+    the path is the ordered 1-based ``(row, col)`` sequence of cells crossed by
+    the polyline on the upright canvas. The same cell at the junction of two
+    consecutive segments appears only once, while a non-consecutive revisit is
+    kept; duplicate consecutive vertices are zero-length and add no record.
+    """
+    canvas_width, canvas_height = normalized_canvas(payload.width, payload.height, payload.rotation)
+    normalized: List[tuple[int, int]] = [
+        normalize_point(point.x, point.y, payload.width, payload.height, payload.rotation)
+        for point in payload.vertices
+    ]
+    path = trace_polyline(normalized, canvas_width, canvas_height, payload.rows, payload.cols)
+    return TraceResponse(
+        rotation=payload.rotation,
+        canvas=Canvas(width=canvas_width, height=canvas_height),
+        grid=Grid(rows=payload.rows, cols=payload.cols),
+        vertices=[
+            Vertex(index=index, x=u, y=v)
+            for index, (u, v) in enumerate(normalized)
+        ],
+        path=[CellRef(row=row, col=col) for row, col in path],
     )
